@@ -1,89 +1,127 @@
 /**
  * Game Core Class
- * 메인 루프 및 시스템 전반을 관리
+ * 모든 시스템을 통합하고 메인 루프를 실행함
  */
+import { GAME_CONFIG } from '../config/gameConfig.js';
+import EventManager from './EventManager.js';
+import Camera from './Camera.js';
+import InputManager from '../system/InputManager.js';
+import SaveManager from '../system/SaveManager.js';
+import TileMap from '../map/TileMap.js';
+import Player from '../player/Player.js';
+import Enemy from '../enemy/Enemy.js';
+import Boss from '../boss/Boss.js';
+import AttackSystem from '../combat/AttackSystem.js';
+import PlanetProgress from '../progress/PlanetProgress.js';
+import UIManager from '../ui/UIManager.js';
+
 export default class Game {
     constructor(canvas) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
-        
-        // 시간 관리 변수 (FPS 독립 구조용)
         this.lastTime = 0;
-        this.accumulator = 0;
-        this.deltaTime = 0;
 
+        // 1. 코어 시스템 초기화
+        this.camera = new Camera();
+        this.progress = new PlanetProgress();
+        this.uiManager = new UIManager();
+        
+        // 2. 게임 객체 초기화
+        this.tileMap = new TileMap({ tileSize: 64, data: this.generateMap() });
+        this.player = new Player();
+        this.attackSystem = new AttackSystem(this.player);
+        
+        // 3. 엔티티 관리 (적군 등)
+        this.enemies = [];
+        
         this.init();
     }
 
-    /**
-     * 초기 설정 및 이벤트 바인딩
-     */
     init() {
-        // 반응형 및 모바일 회전 대응
-        this.handleResize();
+        // 리사이즈 이벤트
         window.addEventListener('resize', () => this.handleResize());
-        window.addEventListener('orientationchange', () => {
-            // 회전 시 약간의 지연 후 리사이즈 처리 (브라우저 계산 시간 확보)
-            setTimeout(() => this.handleResize(), 100);
-        });
+        this.handleResize();
+
+        // 초기 적 생성 (예시)
+        this.spawnEnemies();
     }
 
-    /**
-     * 캔버스 크기를 화면에 맞게 자동 조절
-     */
     handleResize() {
         this.canvas.width = window.innerWidth;
         this.canvas.height = window.innerHeight;
-        
-        // 규칙: 렌더링 좌표 기준 통일 등을 위한 추가 로직 가능
-        console.log(`Canvas Resized: ${this.canvas.width}x${this.canvas.height}`);
+        this.camera.updateViewport();
+    }
+
+    spawnEnemies() {
+        for (let i = 0; i < 5; i++) {
+            this.enemies.push(new Enemy(Math.random() * 1000, Math.random() * 1000, { hp: 50, speed: 80 }));
+        }
     }
 
     /**
-     * 게임 루프 시작
+     * 메인 루프 시작
      */
     start() {
         requestAnimationFrame(this.loop.bind(this));
     }
 
-    /**
-     * 메인 게임 루프 (requestAnimationFrame)
-     * @param {number} timestamp 
-     */
     loop(timestamp) {
-        // deltaTime 계산 (초 단위)
-        this.deltaTime = (timestamp - this.lastTime) / 1000;
+        const deltaTime = Math.min((timestamp - this.lastTime) / 1000, 0.1);
         this.lastTime = timestamp;
 
-        // 비정상적인 큰 deltaTime 방지 (탭 전환 등)
-        if (this.deltaTime > 0.1) this.deltaTime = 0.016;
-
-        this.update(this.deltaTime);
+        this.update(deltaTime);
         this.draw();
 
         requestAnimationFrame(this.loop.bind(this));
     }
 
-    /**
-     * 로직 업데이트 (위치 계산, 충돌 검사 등)
-     */
     update(deltaTime) {
-        // TODO: InputManager.update() 호출
-        // TODO: 모든 게임 객체의 update(deltaTime) 호출
+        // 시스템 업데이트
+        InputManager.update();
+        SaveManager.update(deltaTime);
+
+        // 플레이어 및 카메라 업데이트
+        this.player.update(deltaTime);
+        this.camera.follow(this.player);
+
+        // 전투 및 적군 업데이트
+        this.attackSystem.update(deltaTime, this.enemies);
+        this.enemies.forEach(enemy => enemy.update(deltaTime, this.player));
+
+        // 사망한 적 제거 (배열 필터링)
+        if (this.enemies.some(e => e.isDead)) {
+            this.enemies = this.enemies.filter(e => !e.isDead);
+        }
     }
 
-    /**
-     * 화면 렌더링 (그리기 전용)
-     */
     draw() {
-        // 배경 클리어
+        // 1. 배경 클리어
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // TODO: Camera 적용 후 객체 draw(this.ctx) 호출
-        
-        // 임시 확인용 텍스트
-        this.ctx.fillStyle = "white";
-        this.ctx.font = "20px Arial";
-        this.ctx.fillText(`FPS: ${Math.round(1 / this.deltaTime)}`, 20, 30);
+        // 2. 카메라 적용 (월드 좌표계 시작)
+        this.camera.applyTransform(this.ctx);
+
+        this.tileMap.draw(this.ctx, this.camera);
+        this.player.draw(this.ctx);
+        this.attackSystem.draw(this.ctx);
+        this.enemies.forEach(enemy => enemy.draw(this.ctx));
+
+        // 3. 카메라 해제 (스크린 좌표계 시작)
+        this.camera.resetTransform(this.ctx);
+
+        // 4. UI 렌더링 (카메라의 영향을 받지 않음)
+        this.uiManager.draw(this.ctx);
+    }
+
+    // 임시 맵 데이터 생성기
+    generateMap() {
+        const map = [];
+        for (let r = 0; r < 20; r++) {
+            map[r] = [];
+            for (let c = 0; c < 20; c++) {
+                map[r][c] = (r === 0 || r === 19 || c === 0 || c === 19) ? 1 : 0;
+            }
+        }
+        return map;
     }
 }
